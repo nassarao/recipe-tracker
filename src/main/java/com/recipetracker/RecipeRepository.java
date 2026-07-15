@@ -1,7 +1,6 @@
 package com.recipetracker;
 
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
@@ -14,6 +13,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import javax.inject.Inject;
 import javax.inject.Singleton;
 import net.runelite.client.RuneLite;
 
@@ -21,12 +21,18 @@ import net.runelite.client.RuneLite;
 public class RecipeRepository
 {
 	private static final int SCHEMA_VERSION = 1;
-	private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+	private final Gson gson;
 	private final File cacheFile = new File(new File(RuneLite.RUNELITE_DIR, "recipe-tracker"), "recipe-cache.json");
 	private final Map<String, Recipe> recipesByKey = new LinkedHashMap<>();
 	private final Map<String, RecipeDefinition> cachedDefinitions = new LinkedHashMap<>();
 	private volatile List<Recipe> snapshot = Collections.emptyList();
 	private volatile ItemIndex itemIndex;
+
+	@Inject
+	RecipeRepository(Gson gson)
+	{
+		this.gson = gson;
+	}
 
 	public synchronized void initialize()
 	{
