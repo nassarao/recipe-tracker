@@ -156,34 +156,41 @@ public class RecipeTrackerPlugin extends Plugin
 		{
 			return;
 		}
-		// Modern skill guides do not expose a trustworthy output item ID. Replaying
-		// their native action lets the resulting game message provide the exact name.
+		// Modern skill guides do not expose a trustworthy output item ID. Their
+		// native response message provides the exact name after the player clicks.
 		String outputName = checkMaterials ? "" : resolveMenuOutputName(event, original);
 		if (!checkMaterials && outputName.isEmpty())
 		{
 			return;
 		}
 		Recipe cachedRecipe = recipeRepository.find(menuItemId, outputName);
-		PendingCapture action = new PendingCapture(outputName, original.getParam0(),
-			original.getParam1(), original.getType(), original.getIdentifier(), original.getItemId(),
-			original.getOption(), original.getTarget());
-
-		client.getMenu().createMenuEntry(0)
+		PendingCapture capture = new PendingCapture(outputName);
+		MenuEntry trackEntry = client.getMenu().createMenuEntry(0)
 			.setOption("Track materials")
-			.setTarget(checkMaterials ? "" : outputName)
-			.setType(MenuAction.RUNELITE)
-			.setItemId(menuItemId)
-			.onClick(menuEntry ->
+			.setTarget(checkMaterials ? "" : outputName);
+
+		if (checkMaterials)
+		{
+			// Reuse the native entry's action data. The player's click is processed as
+			// the original Check materials action; no game action is invoked by plugin code.
+			trackEntry
+				.setType(original.getType())
+				.setIdentifier(original.getIdentifier())
+				.setParam0(original.getParam0())
+				.setParam1(original.getParam1())
+				.setItemId(original.getItemId())
+				.onClick(menuEntry -> beginNativeCapture(capture));
+		}
+		else
+		{
+			trackEntry
+				.setType(MenuAction.RUNELITE)
+				.setItemId(menuItemId)
+				.onClick(menuEntry ->
 			{
-				if (!action.outputName.isEmpty())
-				{
-					trackWikiRecipe(action.outputName, cachedRecipe);
-				}
-				else
-				{
-					recoverNameFromOriginalAction(action);
-				}
+				trackWikiRecipe(capture.outputName, cachedRecipe);
 			});
+		}
 	}
 
 	private boolean menuAlreadyHasTrackEntry()
@@ -227,14 +234,12 @@ public class RecipeTrackerPlugin extends Plugin
 		}
 	}
 
-	private void recoverNameFromOriginalAction(PendingCapture action)
+	private void beginNativeCapture(PendingCapture capture)
 	{
-		pendingCapture = action;
-		client.menuAction(action.param0, action.param1, action.type, action.identifier,
-			action.itemId, action.option, action.target);
+		pendingCapture = capture;
 		executor.schedule(() -> clientThread.invokeLater(() ->
 		{
-			if (pendingCapture == action)
+			if (pendingCapture == capture)
 			{
 				pendingCapture = null;
 				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
@@ -556,25 +561,10 @@ public class RecipeTrackerPlugin extends Plugin
 	private static final class PendingCapture
 	{
 		private final String outputName;
-		private final int param0;
-		private final int param1;
-		private final MenuAction type;
-		private final int identifier;
-		private final int itemId;
-		private final String option;
-		private final String target;
 
-		private PendingCapture(String outputName, int param0, int param1, MenuAction type,
-			int identifier, int itemId, String option, String target)
+		private PendingCapture(String outputName)
 		{
 			this.outputName = outputName;
-			this.param0 = param0;
-			this.param1 = param1;
-			this.type = type;
-			this.identifier = identifier;
-			this.itemId = itemId;
-			this.option = option;
-			this.target = target;
 		}
 	}
 
