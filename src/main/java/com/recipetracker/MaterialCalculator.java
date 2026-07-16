@@ -35,6 +35,12 @@ public final class MaterialCalculator
 	public static List<MaterialStatus> calculateAll(List<TrackedRecipe> trackedRecipes,
 		Map<Integer, Integer> inventory)
 	{
+		return calculateAll(trackedRecipes, inventory, Collections.emptyMap());
+	}
+
+	public static List<MaterialStatus> calculateAll(List<TrackedRecipe> trackedRecipes,
+		Map<Integer, Integer> inventory, Map<Integer, Integer> bank)
+	{
 		Map<Integer, RequirementTotal> totals = new LinkedHashMap<>();
 		for (TrackedRecipe tracked : trackedRecipes)
 		{
@@ -54,13 +60,15 @@ public final class MaterialCalculator
 		List<MaterialStatus> result = new ArrayList<>();
 		for (RequirementTotal total : totals.values())
 		{
-			int owned = 0;
+			int inInventory = 0;
+			int inBank = 0;
 			for (int acceptedId : total.requirement.getAcceptedItemIds())
 			{
-				owned += inventory.getOrDefault(acceptedId, 0);
+				inInventory += inventory.getOrDefault(acceptedId, 0);
+				inBank += bank.getOrDefault(acceptedId, 0);
 			}
 			result.add(new MaterialStatus(total.requirement.getItemId(), total.requirement.getName(),
-				total.required, owned, total.tool));
+				total.required, inInventory, inBank, total.tool));
 		}
 		return Collections.unmodifiableList(result);
 	}

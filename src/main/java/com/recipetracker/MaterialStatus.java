@@ -6,19 +6,26 @@ public final class MaterialStatus
 	private final String name;
 	private final int required;
 	private final int inInventory;
+	private final int inBank;
 	private final boolean tool;
 
 	public MaterialStatus(String name, int required, int inInventory)
 	{
-		this(-1, name, required, inInventory, false);
+		this(-1, name, required, inInventory, 0, false);
 	}
 
 	public MaterialStatus(int itemId, String name, int required, int inInventory, boolean tool)
+	{
+		this(itemId, name, required, inInventory, 0, tool);
+	}
+
+	public MaterialStatus(int itemId, String name, int required, int inInventory, int inBank, boolean tool)
 	{
 		this.itemId = itemId;
 		this.name = name;
 		this.required = required;
 		this.inInventory = inInventory;
+		this.inBank = inBank;
 		this.tool = tool;
 	}
 
@@ -47,8 +54,18 @@ public final class MaterialStatus
 		return inInventory;
 	}
 
+	public int getInBank()
+	{
+		return inBank;
+	}
+
 	public boolean isComplete()
 	{
 		return inInventory >= required;
+	}
+
+	public boolean isAvailable()
+	{
+		return (long) inInventory + inBank >= required;
 	}
 }

@@ -49,6 +49,7 @@ public class RecipeTrackerPlugin extends Plugin
 {
 	private static final String TRACKED_RECIPE_KEYS = "trackedRecipeKeys";
 	private static final String LEGACY_TRACKED_RECIPES_KEY = "trackedRecipes";
+	private static final String BANK_SNAPSHOT_KEY = "bankSnapshot";
 
 	@Inject private Client client;
 	@Inject private ClientThread clientThread;
@@ -65,6 +66,9 @@ public class RecipeTrackerPlugin extends Plugin
 	private final Map<String, Integer> trackedQuantities = new LinkedHashMap<>();
 	private volatile List<TrackedRecipe> trackedRecipes = Collections.emptyList();
 	private volatile List<MaterialStatus> statuses = Collections.emptyList();
+	private volatile Map<Integer, Integer> bankCounts = Collections.emptyMap();
+	private volatile boolean bankSnapshotAvailable;
+	private String loadedBankProfileKey;
 	private RecipeTrackerPanel panel;
 	private NavigationButton navigationButton;
 	private volatile PendingCapture pendingCapture;
@@ -73,10 +77,11 @@ public class RecipeTrackerPlugin extends Plugin
 	protected void startUp()
 	{
 		recipeRepository.initialize();
+		loadBankSnapshot();
 		List<Recipe> recipes = recipeRepository.recipes();
 		loadTrackedRecipes();
 		panel = new RecipeTrackerPanel(this, recipes, itemManager);
-		panel.updateTracking(trackedRecipes, statuses);
+		panel.updateTracking(trackedRecipes, statuses, bankSnapshotAvailable);
 
 		navigationButton = NavigationButton.builder()
 			.tooltip("Recipe Tracker")
@@ -117,12 +122,20 @@ public class RecipeTrackerPlugin extends Plugin
 		panel = null;
 		navigationButton = null;
 		pendingCapture = null;
+		bankCounts = Collections.emptyMap();
+		bankSnapshotAvailable = false;
+		loadedBankProfileKey = null;
 	}
 
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
-		if (event.getContainerId() == InventoryID.INVENTORY.getId()
+		if (event.getContainerId() == InventoryID.BANK.getId())
+		{
+			updateBankSnapshot(event.getItemContainer());
+			refreshHeldItems();
+		}
+		else if (event.getContainerId() == InventoryID.INVENTORY.getId()
 			|| event.getContainerId() == InventoryID.EQUIPMENT.getId())
 		{
 			refreshHeldItems();
@@ -134,7 +147,14 @@ public class RecipeTrackerPlugin extends Plugin
 	{
 		if (event.getGameState() == GameState.LOGGED_IN)
 		{
+			loadBankSnapshot();
 			refreshHeldItems();
+		}
+		else if (event.getGameState() == GameState.LOGIN_SCREEN)
+		{
+			bankCounts = Collections.emptyMap();
+			bankSnapshotAvailable = false;
+			loadedBankProfileKey = null;
 		}
 	}
 
@@ -401,6 +421,11 @@ public class RecipeTrackerPlugin extends Plugin
 		return statuses;
 	}
 
+	boolean hasBankSnapshot()
+	{
+		return bankSnapshotAvailable;
+	}
+
 	private void refreshHeldItems()
 	{
 		Map<Integer, Integer> counts = new HashMap<>();
@@ -410,13 +435,86 @@ public class RecipeTrackerPlugin extends Plugin
 		applyEquippedStaffSubstitutions(counts);
 
 		List<TrackedRecipe> trackedSnapshot = trackedRecipes;
-		statuses = MaterialCalculator.calculateAll(trackedSnapshot, counts);
+		statuses = MaterialCalculator.calculateAll(trackedSnapshot, counts, bankCounts);
 		RecipeTrackerPanel currentPanel = panel;
 		if (currentPanel != null)
 		{
 			List<MaterialStatus> snapshot = statuses;
-			SwingUtilities.invokeLater(() -> currentPanel.updateTracking(trackedSnapshot, snapshot));
+			boolean bankAvailable = bankSnapshotAvailable;
+			SwingUtilities.invokeLater(() -> currentPanel.updateTracking(trackedSnapshot, snapshot, bankAvailable));
 		}
+	}
+
+	private void updateBankSnapshot(ItemContainer container)
+	{
+		if (container == null)
+		{
+			return;
+		}
+		Map<Integer, Integer> snapshot = new HashMap<>();
+		addContainer(snapshot, container);
+		bankCounts = Collections.unmodifiableMap(snapshot);
+		bankSnapshotAvailable = true;
+		saveBankSnapshot();
+	}
+
+	private void loadBankSnapshot()
+	{
+		String profileKey = configManager.getRSProfileKey();
+		if (profileKey == null || profileKey.equals(loadedBankProfileKey))
+		{
+			return;
+		}
+
+		loadedBankProfileKey = profileKey;
+		String saved = configManager.getRSProfileConfiguration(RecipeTrackerConfig.GROUP, BANK_SNAPSHOT_KEY);
+		Map<Integer, Integer> snapshot = new HashMap<>();
+		if (saved != null && !saved.isEmpty())
+		{
+			for (String entry : saved.split(","))
+			{
+				int separator = entry.indexOf(':');
+				if (separator <= 0)
+				{
+					continue;
+				}
+				try
+				{
+					int itemId = Integer.parseInt(entry.substring(0, separator));
+					int quantity = Integer.parseInt(entry.substring(separator + 1));
+					if (itemId > 0 && quantity > 0)
+					{
+						snapshot.put(itemId, quantity);
+					}
+				}
+				catch (NumberFormatException ignored)
+				{
+					// Ignore one malformed cached item without discarding the rest of the bank.
+				}
+			}
+		}
+		bankCounts = Collections.unmodifiableMap(snapshot);
+		bankSnapshotAvailable = saved != null;
+	}
+
+	private void saveBankSnapshot()
+	{
+		if (configManager.getRSProfileKey() == null)
+		{
+			return;
+		}
+
+		StringBuilder saved = new StringBuilder();
+		for (Map.Entry<Integer, Integer> entry : bankCounts.entrySet())
+		{
+			if (saved.length() > 0)
+			{
+				saved.append(',');
+			}
+			saved.append(entry.getKey()).append(':').append(entry.getValue());
+		}
+		configManager.setRSProfileConfiguration(RecipeTrackerConfig.GROUP, BANK_SNAPSHOT_KEY,
+			saved.toString());
 	}
 
 	private void addContainer(Map<Integer, Integer> counts, ItemContainer container)

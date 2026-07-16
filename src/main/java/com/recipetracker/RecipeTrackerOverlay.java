@@ -56,9 +56,10 @@ public class RecipeTrackerOverlay extends OverlayPanel
 
 		for (MaterialStatus status : statuses)
 		{
-			Color color = status.isComplete() ? COMPLETE : MISSING;
+			Color color = status.isComplete() ? COMPLETE : status.isAvailable() ? Color.WHITE : MISSING;
+			String banked = plugin.hasBankSnapshot() ? " (" + status.getInBank() + " banked)" : "";
 			panelComponent.getChildren().add(LineComponent.builder()
-				.left(status.getName() + (status.isTool() ? " (tool)" : ""))
+				.left(status.getName() + (status.isTool() ? " (tool)" : "") + banked)
 				.right(status.getInInventory() + " / " + status.getRequired())
 				.leftColor(color)
 				.rightColor(color)

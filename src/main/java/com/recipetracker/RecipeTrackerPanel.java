@@ -48,6 +48,7 @@ public class RecipeTrackerPanel extends PluginPanel
 	private final JTextField searchField = new JTextField();
 	private final JPanel trackedRows = verticalPanel();
 	private final JPanel requirementRows = verticalPanel();
+	private final JLabel bankNote = message("Open your bank once to load banked item counts.");
 	private final Timer wikiSearchTimer;
 	private boolean changingSelection;
 
@@ -85,6 +86,8 @@ public class RecipeTrackerPanel extends PluginPanel
 		details.add(Box.createVerticalStrut(10));
 		details.add(sectionTitle("Combined requirements"));
 		details.add(requirementRows);
+		bankNote.setVisible(false);
+		details.add(bankNote);
 		JLabel note = new JLabel("<html><small>Tools are reusable and are only required once.</small></html>");
 		note.setForeground(Color.GRAY);
 		details.add(Box.createVerticalStrut(6));
@@ -127,11 +130,11 @@ public class RecipeTrackerPanel extends PluginPanel
 		filterRecipes();
 	}
 
-	void updateTracking(List<TrackedRecipe> tracked, List<MaterialStatus> statuses)
+	void updateTracking(List<TrackedRecipe> tracked, List<MaterialStatus> statuses, boolean bankAvailable)
 	{
 		if (!SwingUtilities.isEventDispatchThread())
 		{
-			SwingUtilities.invokeLater(() -> updateTracking(tracked, statuses));
+			SwingUtilities.invokeLater(() -> updateTracking(tracked, statuses, bankAvailable));
 			return;
 		}
 
@@ -153,9 +156,10 @@ public class RecipeTrackerPanel extends PluginPanel
 		}
 		for (MaterialStatus status : statuses)
 		{
-			requirementRows.add(createRequirementRow(status));
+			requirementRows.add(createRequirementRow(status, bankAvailable));
 			requirementRows.add(Box.createVerticalStrut(3));
 		}
+		bankNote.setVisible(!bankAvailable && !statuses.isEmpty());
 		trackedRows.revalidate();
 		trackedRows.repaint();
 		requirementRows.revalidate();
@@ -198,14 +202,15 @@ public class RecipeTrackerPanel extends PluginPanel
 		return row;
 	}
 
-	private JPanel createRequirementRow(MaterialStatus status)
+	private JPanel createRequirementRow(MaterialStatus status, boolean bankAvailable)
 	{
 		JPanel row = new JPanel(new BorderLayout(8, 0));
 		row.setBorder(BorderFactory.createEmptyBorder(5, 6, 5, 6));
 		row.setBackground(ColorScheme.DARKER_GRAY_COLOR);
-		Color color = status.isComplete() ? COMPLETE : MISSING;
+		Color color = status.isComplete() ? COMPLETE : status.isAvailable() ? Color.WHITE : MISSING;
 		String suffix = status.isTool() ? " (tool)" : "";
-		JLabel name = new JLabel(status.getName() + suffix);
+		String banked = bankAvailable ? " (" + status.getInBank() + " banked)" : "";
+		JLabel name = new JLabel(status.getName() + suffix + banked);
 		if (status.getItemId() > 0)
 		{
 			setItemIcon(name, status.getItemId());

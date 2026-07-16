@@ -77,4 +77,35 @@ public class MaterialCalculatorTest
 
 		assertTrue(result.get(0).isComplete());
 	}
+
+	@Test
+	public void distinguishesInventoryCompletionFromCombinedBankAvailability()
+	{
+		Recipe recipe = new Recipe(20, "Rune item", "Smithing", 1,
+			new MaterialRequirement(2363, "Runite bar", 6));
+
+		List<MaterialStatus> result = MaterialCalculator.calculateAll(
+			Collections.singletonList(new TrackedRecipe(recipe, 1)),
+			Collections.singletonMap(2363, 2), Collections.singletonMap(2363, 4));
+
+		MaterialStatus status = result.get(0);
+		assertEquals(2, status.getInInventory());
+		assertEquals(4, status.getInBank());
+		assertFalse(status.isComplete());
+		assertTrue(status.isAvailable());
+	}
+
+	@Test
+	public void remainsUnavailableWhenInventoryAndBankAreShort()
+	{
+		Recipe recipe = new Recipe(20, "Rune item", "Smithing", 1,
+			new MaterialRequirement(2363, "Runite bar", 6));
+
+		MaterialStatus status = MaterialCalculator.calculateAll(
+			Collections.singletonList(new TrackedRecipe(recipe, 1)),
+			Collections.singletonMap(2363, 2), Collections.singletonMap(2363, 3)).get(0);
+
+		assertFalse(status.isComplete());
+		assertFalse(status.isAvailable());
+	}
 }
