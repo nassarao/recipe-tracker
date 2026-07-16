@@ -26,6 +26,7 @@ import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.callback.ClientThread;
@@ -179,7 +180,7 @@ public class RecipeTrackerPlugin extends Plugin
 				.setParam0(original.getParam0())
 				.setParam1(original.getParam1())
 				.setItemId(original.getItemId())
-				.onClick(menuEntry -> beginNativeCapture(capture));
+				.setWorldViewId(original.getWorldViewId());
 		}
 		else
 		{
@@ -190,6 +191,16 @@ public class RecipeTrackerPlugin extends Plugin
 			{
 				trackWikiRecipe(capture.outputName, cachedRecipe);
 			});
+		}
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		if ("Track materials".equalsIgnoreCase(event.getMenuOption())
+			&& event.getMenuAction() != MenuAction.RUNELITE)
+		{
+			beginNativeCapture(new PendingCapture(""));
 		}
 	}
 
