@@ -4,11 +4,12 @@ import com.google.inject.Provides;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
@@ -22,11 +23,12 @@ import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.Varbits;
-import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.callback.ClientThread;
@@ -68,10 +70,11 @@ public class RecipeTrackerPlugin extends Plugin
 	private volatile List<MaterialStatus> statuses = Collections.emptyList();
 	private volatile Map<Integer, Integer> bankCounts = Collections.emptyMap();
 	private volatile boolean bankSnapshotAvailable;
+	private final Set<Widget> modifiedSkillGuideWidgets =
+		Collections.newSetFromMap(new IdentityHashMap<>());
 	private String loadedBankProfileKey;
 	private RecipeTrackerPanel panel;
 	private NavigationButton navigationButton;
-	private volatile PendingCapture pendingCapture;
 
 	@Override
 	protected void startUp()
@@ -121,10 +124,24 @@ public class RecipeTrackerPlugin extends Plugin
 		}
 		panel = null;
 		navigationButton = null;
-		pendingCapture = null;
 		bankCounts = Collections.emptyMap();
 		bankSnapshotAvailable = false;
+		clearLegacySkillGuideActions();
 		loadedBankProfileKey = null;
+	}
+
+	@Subscribe
+	public void onClientTick(ClientTick event)
+	{
+		if (!shouldShowTrackMenu())
+		{
+			clearLegacySkillGuideActions();
+			return;
+		}
+
+		// Legacy skill guides have no native row operation, but their icon
+		// widgets contain the same canonical item IDs used by Wiki Lookup.
+		addLegacySkillGuideActions(client.getWidget(InterfaceID.SkillGuide.ICONS));
 	}
 
 	@Subscribe
@@ -172,56 +189,102 @@ public class RecipeTrackerPlugin extends Plugin
 			return;
 		}
 
-		int menuItemId = checkMaterials ? -1 : resolveMenuItemId(event, original);
-		if (!checkMaterials && menuItemId <= 0)
+		int menuItemId = resolveMenuItemId(event, original);
+		if (menuItemId <= 0)
 		{
 			return;
 		}
-		// Modern skill guides do not expose a trustworthy output item ID. Their
-		// native response message provides the exact name after the player clicks.
-		String outputName = checkMaterials ? "" : resolveMenuOutputName(event, original);
-		if (!checkMaterials && outputName.isEmpty())
+		String outputName = resolveMenuOutputName(event, original);
+		if (outputName.isEmpty())
 		{
 			return;
 		}
-		Recipe cachedRecipe = recipeRepository.find(menuItemId, outputName);
-		PendingCapture capture = new PendingCapture(outputName);
-		MenuEntry trackEntry = client.getMenu().createMenuEntry(0)
-			.setOption("Track materials")
-			.setTarget(checkMaterials ? "" : outputName);
+		addTrackMenuEntry(menuItemId, outputName);
+	}
 
-		if (checkMaterials)
-		{
-			// Reuse the native entry's action data. The player's click is processed as
-			// the original Check materials action; no game action is invoked by plugin code.
-			trackEntry
-				.setType(original.getType())
-				.setIdentifier(original.getIdentifier())
-				.setParam0(original.getParam0())
-				.setParam1(original.getParam1())
-				.setItemId(original.getItemId())
-				.setWorldViewId(original.getWorldViewId());
-		}
-		else
-		{
-			trackEntry
-				.setType(MenuAction.RUNELITE)
-				.setItemId(menuItemId)
-				.onClick(menuEntry ->
+	private void addTrackMenuEntry(int itemId, String outputName)
+	{
+		client.getMenu().createMenuEntry(0)
+			.setOption("Track materials")
+			.setTarget(outputName)
+			.setType(MenuAction.RUNELITE)
+			.setItemId(itemId)
+			.onClick(menuEntry ->
 			{
-				trackWikiRecipe(capture.outputName, cachedRecipe);
+				trackResolvedItem(itemId, outputName);
 			});
-		}
+	}
+
+	private void trackResolvedItem(int itemId, String outputName)
+	{
+		trackWikiRecipe(outputName, recipeRepository.find(itemId, outputName));
 	}
 
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		if ("Track materials".equalsIgnoreCase(event.getMenuOption())
-			&& event.getMenuAction() != MenuAction.RUNELITE)
+		if (!"Track materials".equalsIgnoreCase(event.getMenuOption()))
 		{
-			beginNativeCapture(new PendingCapture(""));
+			return;
 		}
+
+		event.consume();
+		Widget widget = resolveMenuWidget(event.getMenuEntry());
+		int itemId = widget == null ? -1 : itemManager.canonicalize(widget.getItemId());
+		String outputName = itemName(itemId);
+		if (itemId > 0 && !outputName.isEmpty())
+		{
+			trackResolvedItem(itemId, outputName);
+		}
+	}
+
+	private void addLegacySkillGuideActions(Widget widget)
+	{
+		if (widget == null || widget.isHidden())
+		{
+			return;
+		}
+
+		if (widget.getItemId() > 0)
+		{
+			String[] actions = widget.getActions();
+			String existing = actions != null && actions.length > 9 ? actions[9] : null;
+			if (existing == null || existing.isEmpty() || "Track materials".equals(existing))
+			{
+				widget.setAction(9, "Track materials");
+				modifiedSkillGuideWidgets.add(widget);
+			}
+		}
+
+		Widget[] children = widget.getChildren();
+		if (children != null)
+		{
+			for (Widget child : children)
+			{
+				addLegacySkillGuideActions(child);
+			}
+		}
+	}
+
+	private void clearLegacySkillGuideActions()
+	{
+		for (Widget widget : modifiedSkillGuideWidgets)
+		{
+			try
+			{
+				String[] actions = widget.getActions();
+				if (actions != null && actions.length > 9
+					&& "Track materials".equals(actions[9]))
+				{
+					widget.setAction(9, null);
+				}
+			}
+			catch (RuntimeException ignored)
+			{
+				// The guide may have closed and invalidated its dynamic widgets.
+			}
+		}
+		modifiedSkillGuideWidgets.clear();
 	}
 
 	private boolean menuAlreadyHasTrackEntry()
@@ -243,42 +306,6 @@ public class RecipeTrackerPlugin extends Plugin
 			|| (mode == TrackMenuMode.SHIFT && client.isKeyPressed(KeyCode.KC_SHIFT));
 	}
 
-	@Subscribe
-	public void onChatMessage(ChatMessage event)
-	{
-		PendingCapture pending = pendingCapture;
-		if (pending == null || event.getType() != ChatMessageType.GAMEMESSAGE)
-		{
-			return;
-		}
-		String message = Text.removeTags(event.getMessage()).trim();
-		int separator = message.indexOf(':');
-		if (separator <= 0 || !message.substring(separator + 1).toLowerCase().contains(" x "))
-		{
-			return;
-		}
-		String outputName = message.substring(0, separator).trim();
-		if (!outputName.isEmpty() && pendingCapture == pending)
-		{
-			pendingCapture = null;
-			trackWikiRecipe(outputName, recipeRepository.find(-1, outputName));
-		}
-	}
-
-	private void beginNativeCapture(PendingCapture capture)
-	{
-		pendingCapture = capture;
-		executor.schedule(() -> clientThread.invokeLater(() ->
-		{
-			if (pendingCapture == capture)
-			{
-				pendingCapture = null;
-				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-					"Recipe Tracker: could not determine which item was selected.", null);
-			}
-		}), 3, TimeUnit.SECONDS);
-	}
-
 	private String resolveMenuOutputName(MenuEntryAdded event, MenuEntry entry)
 	{
 		String resolvedItemName = itemName(resolveMenuItemId(event, entry));
@@ -293,16 +320,29 @@ public class RecipeTrackerPlugin extends Plugin
 	{
 		// Widget menus can retain a stale MenuEntry item ID. The widget and slot
 		// parameters identify the item the player actually right-clicked.
-		Widget widget = client.getWidget(entry.getParam1());
+		Widget widget = resolveMenuWidget(entry);
 		if (widget != null)
 		{
-			Widget child = entry.getParam0() >= 0 ? widget.getChild(entry.getParam0()) : null;
-			int itemId = child != null && child.getItemId() > 0 ? child.getItemId() : widget.getItemId();
+			int itemId = widget.getItemId();
 			if (itemId > 0) return itemManager.canonicalize(itemId);
 		}
 		if (entry.getItemId() > 0) return itemManager.canonicalize(entry.getItemId());
 		if (event.getItemId() > 0) return itemManager.canonicalize(event.getItemId());
 		return -1;
+	}
+
+	private Widget resolveMenuWidget(MenuEntry entry)
+	{
+		Widget widget = client.getWidget(entry.getParam1());
+		if (widget != null && entry.getParam0() >= 0)
+		{
+			Widget child = widget.getChild(entry.getParam0());
+			if (child != null)
+			{
+				widget = child;
+			}
+		}
+		return widget;
 	}
 
 	private String itemName(int itemId)
@@ -665,16 +705,6 @@ public class RecipeTrackerPlugin extends Plugin
 			catch (NumberFormatException ignored) { }
 		}
 		saveTrackedRecipes();
-	}
-
-	private static final class PendingCapture
-	{
-		private final String outputName;
-
-		private PendingCapture(String outputName)
-		{
-			this.outputName = outputName;
-		}
 	}
 
 	@Provides
