@@ -23,6 +23,12 @@ public class BundledRecipeIndexTest
 		Recipe oakLarder = repository.find(8234, "Oak larder");
 		assertNotNull(oakLarder);
 		assertEquals("Oak larder", oakLarder.getName());
+
+		Recipe nails = repository.findCraftingRecipe(
+			new MaterialRequirement(4819, "Bronze nails", 20));
+		assertNotNull(nails);
+		assertEquals("Bronze nails", nails.getName());
+		assertEquals(15, nails.getOutputQuantity());
 	}
 
 	@Test

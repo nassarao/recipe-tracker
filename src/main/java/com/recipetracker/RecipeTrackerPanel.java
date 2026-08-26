@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -131,11 +132,14 @@ public class RecipeTrackerPanel extends PluginPanel
 		filterRecipes();
 	}
 
-	void updateTracking(List<TrackedRecipe> tracked, List<MaterialStatus> statuses, boolean bankAvailable)
+	void updateTracking(List<TrackedRecipe> tracked,
+		Map<TrackedRecipe, List<MaterialStatus>> goalStatuses,
+		List<MaterialStatus> statuses, boolean bankAvailable)
 	{
 		if (!SwingUtilities.isEventDispatchThread())
 		{
-			SwingUtilities.invokeLater(() -> updateTracking(tracked, statuses, bankAvailable));
+			SwingUtilities.invokeLater(() -> updateTracking(
+				tracked, goalStatuses, statuses, bankAvailable));
 			return;
 		}
 
@@ -146,7 +150,7 @@ public class RecipeTrackerPanel extends PluginPanel
 		}
 		for (TrackedRecipe item : tracked)
 		{
-			trackedRows.add(createTrackedRow(item));
+			trackedRows.add(createTrackedSection(item, goalStatuses, bankAvailable, 0));
 			trackedRows.add(Box.createVerticalStrut(3));
 		}
 
@@ -178,28 +182,100 @@ public class RecipeTrackerPanel extends PluginPanel
 		filterRecipes();
 	}
 
-	private JPanel createTrackedRow(TrackedRecipe tracked)
+	private JPanel createTrackedSection(TrackedRecipe tracked,
+		Map<TrackedRecipe, List<MaterialStatus>> goalStatuses, boolean bankAvailable, int depth)
 	{
-		JPanel row = new JPanel(new BorderLayout(5, 0));
-		row.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 4));
-		row.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		JPanel section = verticalPanel();
+		section.setBorder(BorderFactory.createEmptyBorder(0, depth == 0 ? 0 : 10, 0, 0));
+
+		JPanel row = new JPanel(new BorderLayout(4, 0));
+		row.setBorder(BorderFactory.createEmptyBorder(4, 3, 4, 4));
+		row.setBackground(depth == 0 ? ColorScheme.DARKER_GRAY_COLOR : ColorScheme.DARK_GRAY_COLOR);
+		JButton collapse = new JButton(tracked.isCollapsed() ? "+" : "−");
+		collapse.setToolTipText(tracked.isCollapsed() ? "Show recipe materials" : "Hide recipe materials");
+		collapse.setPreferredSize(new Dimension(28, 25));
+		collapse.addActionListener(e -> plugin.setCollapsed(tracked, !tracked.isCollapsed()));
+		row.add(collapse, BorderLayout.WEST);
+
 		JLabel itemName = new JLabel(tracked.getRecipe().getName());
 		setItemIcon(itemName, tracked.getRecipe().getOutputItemId());
 		row.add(itemName, BorderLayout.CENTER);
 
 		JPanel controls = new JPanel(new FlowLayout(FlowLayout.RIGHT, 3, 0));
 		controls.setOpaque(false);
-		JSpinner quantity = new JSpinner(new SpinnerNumberModel(tracked.getQuantity(), 1, 10000, 1));
-		quantity.setPreferredSize(new Dimension(48, 25));
-		quantity.addChangeListener(e -> plugin.setTargetQuantity(tracked.getRecipe(), (Integer) quantity.getValue()));
+		if (tracked.getParent() == null)
+		{
+			JSpinner quantity = new JSpinner(new SpinnerNumberModel(tracked.getQuantity(), 1, 10000, 1));
+			quantity.setPreferredSize(new Dimension(48, 25));
+			quantity.addChangeListener(e -> plugin.setTargetQuantity(
+				tracked, (Integer) quantity.getValue()));
+			controls.add(quantity);
+		}
+		else
+		{
+			controls.add(new JLabel("x" + tracked.getQuantity()));
+		}
 		JButton remove = new JButton("X");
-		remove.setToolTipText("Stop tracking");
+		remove.setToolTipText(tracked.getParent() == null
+			? "Stop tracking" : "Stop expanding this material");
 		remove.setPreferredSize(new Dimension(28, 25));
-		remove.addActionListener(e -> plugin.untrackRecipe(tracked.getRecipe()));
-		controls.add(quantity);
+		remove.addActionListener(e -> plugin.removeTrackedGoal(tracked));
 		controls.add(remove);
 		row.add(controls, BorderLayout.EAST);
 		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+		section.add(row);
+
+		if (!tracked.isCollapsed())
+		{
+			List<MaterialStatus> recipeStatuses = goalStatuses.getOrDefault(tracked, java.util.Collections.emptyList());
+			int statusIndex = 0;
+			for (MaterialRequirement material : tracked.getRecipe().getMaterials())
+			{
+				MaterialStatus status = statusIndex < recipeStatuses.size()
+					? recipeStatuses.get(statusIndex) : null;
+				section.add(createGoalRequirementRow(tracked, material, status, bankAvailable));
+				TrackedRecipe child = tracked.childFor(material);
+				if (child != null)
+				{
+					section.add(createTrackedSection(child, goalStatuses, bankAvailable, depth + 1));
+				}
+				statusIndex++;
+			}
+			for (MaterialRequirement tool : tracked.getRecipe().getTools())
+			{
+				MaterialStatus status = statusIndex < recipeStatuses.size()
+					? recipeStatuses.get(statusIndex) : null;
+				section.add(createGoalRequirementRow(tracked, tool, status, bankAvailable));
+				statusIndex++;
+			}
+		}
+		return section;
+	}
+
+	private JPanel createGoalRequirementRow(TrackedRecipe tracked, MaterialRequirement requirement,
+		MaterialStatus status, boolean bankAvailable)
+	{
+		if (status == null)
+		{
+			status = new MaterialStatus(requirement.getItemId(), requirement.getName(),
+				requirement.getQuantity(), 0, 0, tracked.getRecipe().getTools().contains(requirement));
+		}
+		JPanel row = createRequirementRow(status, bankAvailable);
+		if (!status.isTool())
+		{
+			TrackedRecipe child = tracked.childFor(requirement);
+			Recipe subRecipe = child == null ? plugin.findSubRecipe(tracked, requirement) : child.getRecipe();
+			if (subRecipe != null)
+			{
+				JButton expand = new JButton(child == null ? "+" : "−");
+				expand.setPreferredSize(new Dimension(28, 23));
+				expand.setToolTipText(child == null
+					? "Make this material from its own recipe" : "Use this material directly");
+				expand.addActionListener(e -> plugin.toggleSubRecipe(tracked, requirement));
+				row.add(expand, BorderLayout.WEST);
+			}
+		}
+		row.setBorder(BorderFactory.createEmptyBorder(3, 34, 3, 6));
 		return row;
 	}
 

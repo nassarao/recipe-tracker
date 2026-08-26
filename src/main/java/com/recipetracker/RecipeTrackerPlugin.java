@@ -1,11 +1,13 @@
 package com.recipetracker;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.google.inject.Provides;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -57,6 +59,7 @@ public class RecipeTrackerPlugin extends Plugin
 	private static final String LEGACY_TRACKED_RECIPES_KEY = "trackedRecipes";
 	private static final String BANK_SNAPSHOT_KEY = "bankSnapshot";
 	private static final long SAILING_CAPTURE_WINDOW_NANOS = TimeUnit.SECONDS.toNanos(8);
+	private static final Type TRACKED_STATES_TYPE = new TypeToken<List<TrackedRecipeState>>() { }.getType();
 
 	@Inject private Client client;
 	@Inject private ClientThread clientThread;
@@ -65,14 +68,16 @@ public class RecipeTrackerPlugin extends Plugin
 	@Inject private RecipeTrackerOverlay overlay;
 	@Inject private ClientToolbar clientToolbar;
 	@Inject private ConfigManager configManager;
+	@Inject private Gson gson;
 	@Inject private RecipeTrackerConfig config;
 	@Inject private RecipeRepository recipeRepository;
 	@Inject private WikiRecipeService wikiRecipeService;
 	@Inject private ScheduledExecutorService executor;
 
-	private final Map<String, Integer> trackedQuantities = new LinkedHashMap<>();
+	private final Object trackedLock = new Object();
 	private volatile List<TrackedRecipe> trackedRecipes = Collections.emptyList();
 	private volatile List<MaterialStatus> statuses = Collections.emptyList();
+	private volatile Map<TrackedRecipe, List<MaterialStatus>> goalStatuses = Collections.emptyMap();
 	private volatile Map<Integer, Integer> bankCounts = Collections.emptyMap();
 	private volatile boolean bankSnapshotAvailable;
 	private final Set<Widget> modifiedSkillGuideWidgets =
@@ -90,7 +95,7 @@ public class RecipeTrackerPlugin extends Plugin
 		List<Recipe> recipes = recipeRepository.recipes();
 		loadTrackedRecipes();
 		panel = new RecipeTrackerPanel(this, recipes, itemManager);
-		panel.updateTracking(trackedRecipes, statuses, bankSnapshotAvailable);
+		panel.updateTracking(trackedRecipes, goalStatuses, statuses, bankSnapshotAvailable);
 
 		navigationButton = NavigationButton.builder()
 			.tooltip("Recipe Tracker")
@@ -123,10 +128,10 @@ public class RecipeTrackerPlugin extends Plugin
 			clientToolbar.removeNavigation(navigationButton);
 		}
 		statuses = Collections.emptyList();
-		trackedRecipes = Collections.emptyList();
-		synchronized (trackedQuantities)
+		goalStatuses = Collections.emptyMap();
+		synchronized (trackedLock)
 		{
-			trackedQuantities.clear();
+			trackedRecipes = Collections.emptyList();
 		}
 		panel = null;
 		navigationButton = null;
@@ -190,19 +195,18 @@ public class RecipeTrackerPlugin extends Plugin
 		MenuEntry original = event.getMenuEntry();
 		int interfaceId = original.getParam1() > 0
 			? WidgetUtil.componentToInterface(original.getParam1()) : -1;
-		boolean buildInterface = config.captureBuildClicks()
-			&& (isConstructionInterface(interfaceId) || isSailingInterface(interfaceId));
-		boolean ordinaryItem = "examine".equals(option)
-			&& Math.max(event.getItemId(), original.getItemId()) > 0;
-		if (!shouldShowTrackMenu()
-			|| (!checkMaterials && !ordinaryItem && !isBuildMenuCandidate(event, original, interfaceId))
-			|| menuAlreadyHasTrackEntry())
+		// Plugin Hub rules prohibit modifying Construction menus. Sailing's
+		// Shipwright action is also observed passively so no custom entry sends a
+		// replacement action to the server.
+		if (isConstructionInterface(interfaceId) || isSailingInterface(interfaceId))
 		{
 			return;
 		}
-		if (buildInterface)
+		boolean ordinaryItem = "examine".equals(option)
+			&& Math.max(event.getItemId(), original.getItemId()) > 0;
+		if (!shouldShowTrackMenu() || (!checkMaterials && !ordinaryItem)
+			|| menuAlreadyHasTrackEntry())
 		{
-			addBuildTrackMenuEntry(event, original, interfaceId);
 			return;
 		}
 
@@ -217,76 +221,6 @@ public class RecipeTrackerPlugin extends Plugin
 			return;
 		}
 		addTrackMenuEntry(menuItemId, outputName);
-	}
-
-	private boolean isBuildMenuCandidate(MenuEntryAdded event, MenuEntry original, int interfaceId)
-	{
-		if (!config.captureBuildClicks()
-			|| (!isConstructionInterface(interfaceId) && !isSailingInterface(interfaceId)))
-		{
-			return false;
-		}
-
-		if (resolveMenuItemId(event, original) > 0)
-		{
-			return true;
-		}
-		String option = Text.removeTags(event.getOption() == null ? "" : event.getOption()).trim();
-		String target = Text.removeTags(event.getTarget() == null ? "" : event.getTarget()).trim();
-		if (isNavigationTarget(option)
-			&& !(isSailingInterface(interfaceId) && "Upgrade".equalsIgnoreCase(option)))
-		{
-			return false;
-		}
-		return !target.isEmpty() && !isNavigationTarget(target)
-			|| isSailingInterface(interfaceId) && "Upgrade".equalsIgnoreCase(option);
-	}
-
-	private void addBuildTrackMenuEntry(MenuEntryAdded event, MenuEntry original, int interfaceId)
-	{
-		int itemId = resolveMenuItemId(event, original);
-		String outputName = itemName(itemId);
-		if (outputName.isEmpty())
-		{
-			outputName = Text.removeTags(event.getTarget() == null ? "" : event.getTarget()).trim();
-		}
-		boolean sailing = isSailingInterface(interfaceId);
-		boolean needsNativeAction = sailing
-			&& (outputName.isEmpty() || isNavigationTarget(outputName));
-		String menuTarget = needsNativeAction ? "Shipwright upgrade" : outputName;
-		final String recipeName = outputName;
-		final int recipeItemId = itemId;
-		final int originalParam0 = original.getParam0();
-		final int originalParam1 = original.getParam1();
-		final int originalIdentifier = original.getIdentifier();
-		final int originalItemId = original.getItemId();
-		final MenuAction originalType = original.getType();
-		final String originalOption = original.getOption();
-		final String originalTarget = original.getTarget();
-
-		client.getMenu().createMenuEntry(0)
-			.setOption("Track materials")
-			.setTarget(menuTarget)
-			.setType(MenuAction.RUNELITE)
-			.setItemId(itemId)
-			.setParam0(originalParam0)
-			.setParam1(originalParam1)
-			.onClick(menuEntry ->
-			{
-				if (sailing)
-				{
-					sailingCaptureDeadline = System.nanoTime() + SAILING_CAPTURE_WINDOW_NANOS;
-				}
-				if (!recipeName.isEmpty() && !isNavigationTarget(recipeName))
-				{
-					trackResolvedRecipeOrWiki(recipeItemId, recipeName);
-				}
-				if (needsNativeAction)
-				{
-					client.menuAction(originalParam0, originalParam1, originalType,
-						originalIdentifier, originalItemId, originalOption, originalTarget);
-				}
-			});
 	}
 
 	private void addTrackMenuEntry(int itemId, String outputName)
@@ -325,14 +259,6 @@ public class RecipeTrackerPlugin extends Plugin
 	{
 		if ("Track materials".equalsIgnoreCase(event.getMenuOption()))
 		{
-			int component = event.getParam1();
-			int interfaceId = component > 0 ? WidgetUtil.componentToInterface(component) : -1;
-			if (isConstructionInterface(interfaceId) || isSailingInterface(interfaceId))
-			{
-				// Build-interface entries have their own callback because Shipwright's
-				// generic Upgrade action must be replayed to obtain its materials line.
-				return;
-			}
 			event.consume();
 			Widget widget = resolveMenuWidget(event.getMenuEntry());
 			int itemId = widget == null ? -1 : itemManager.canonicalize(widget.getItemId());
@@ -580,10 +506,14 @@ public class RecipeTrackerPlugin extends Plugin
 
 	void trackRecipe(Recipe recipe)
 	{
-		synchronized (trackedQuantities)
+		synchronized (trackedLock)
 		{
-			trackedQuantities.putIfAbsent(recipe.getKey(), 1);
-			rebuildTrackedRecipes();
+			if (findRoot(recipe.getKey()) == null)
+			{
+				List<TrackedRecipe> updated = new ArrayList<>(trackedRecipes);
+				updated.add(new TrackedRecipe(recipe, 1));
+				trackedRecipes = Collections.unmodifiableList(updated);
+			}
 			saveTrackedRecipes();
 		}
 		requestInventoryRefresh();
@@ -635,30 +565,128 @@ public class RecipeTrackerPlugin extends Plugin
 		});
 	}
 
-	void untrackRecipe(Recipe recipe)
+	void removeTrackedGoal(TrackedRecipe tracked)
 	{
-		synchronized (trackedQuantities)
+		synchronized (trackedLock)
 		{
-			trackedQuantities.remove(recipe.getKey());
-			rebuildTrackedRecipes();
+			TrackedRecipe parent = tracked.getParent();
+			if (parent == null)
+			{
+				List<TrackedRecipe> updated = new ArrayList<>(trackedRecipes);
+				updated.remove(tracked);
+				trackedRecipes = Collections.unmodifiableList(updated);
+			}
+			else
+			{
+				parent.removeChild(tracked);
+			}
 			saveTrackedRecipes();
 		}
 		requestInventoryRefresh();
 	}
 
-	void setTargetQuantity(Recipe recipe, int quantity)
+	void setTargetQuantity(TrackedRecipe tracked, int quantity)
 	{
-		synchronized (trackedQuantities)
+		synchronized (trackedLock)
 		{
-			if (!trackedQuantities.containsKey(recipe.getKey()))
-			{
-				return;
-			}
-			trackedQuantities.put(recipe.getKey(), Math.max(1, Math.min(10000, quantity)));
-			rebuildTrackedRecipes();
+			tracked.setQuantity(quantity);
+			synchronizeChildQuantities(tracked);
 			saveTrackedRecipes();
 		}
 		requestInventoryRefresh();
+	}
+
+	void setCollapsed(TrackedRecipe tracked, boolean collapsed)
+	{
+		synchronized (trackedLock)
+		{
+			tracked.setCollapsed(collapsed);
+			saveTrackedRecipes();
+		}
+		requestInventoryRefresh();
+	}
+
+	Recipe findSubRecipe(TrackedRecipe parent, MaterialRequirement material)
+	{
+		Recipe candidate = recipeRepository.findCraftingRecipe(material);
+		if (candidate == null)
+		{
+			return null;
+		}
+		for (TrackedRecipe ancestor = parent; ancestor != null; ancestor = ancestor.getParent())
+		{
+			Recipe ancestorRecipe = ancestor.getRecipe();
+			if (ancestorRecipe.getKey().equals(candidate.getKey())
+				|| (candidate.getOutputItemId() > 0
+					&& candidate.getOutputItemId() == ancestorRecipe.getOutputItemId()))
+			{
+				return null;
+			}
+		}
+		return candidate;
+	}
+
+	void toggleSubRecipe(TrackedRecipe parent, MaterialRequirement material)
+	{
+		synchronized (trackedLock)
+		{
+			TrackedRecipe existing = parent.childFor(material);
+			if (existing != null)
+			{
+				parent.removeChild(existing);
+			}
+			else
+			{
+				Recipe recipe = findSubRecipe(parent, material);
+				if (recipe == null)
+				{
+					return;
+				}
+				parent.addChild(new TrackedRecipe(recipe, requiredFor(parent, material)));
+			}
+			synchronizeChildQuantities(parent);
+			saveTrackedRecipes();
+		}
+		requestInventoryRefresh();
+	}
+
+	private TrackedRecipe findRoot(String recipeKey)
+	{
+		for (TrackedRecipe tracked : trackedRecipes)
+		{
+			if (tracked.getRecipe().getKey().equals(recipeKey))
+			{
+				return tracked;
+			}
+		}
+		return null;
+	}
+
+	private static int requiredFor(TrackedRecipe parent, MaterialRequirement material)
+	{
+		Recipe recipe = parent.getRecipe();
+		int crafts = Math.max(1, (parent.getQuantity() + recipe.getOutputQuantity() - 1)
+			/ recipe.getOutputQuantity());
+		return Math.max(1, (int) Math.ceil(material.getQuantityPerCraft() * crafts));
+	}
+
+	private void synchronizeChildQuantities(TrackedRecipe parent)
+	{
+		List<TrackedRecipe> unmatched = new ArrayList<>(parent.getChildren());
+		for (MaterialRequirement material : parent.getRecipe().getMaterials())
+		{
+			TrackedRecipe child = parent.childFor(material);
+			if (child != null)
+			{
+				unmatched.remove(child);
+				child.setQuantity(requiredFor(parent, material));
+				synchronizeChildQuantities(child);
+			}
+		}
+		for (TrackedRecipe orphan : unmatched)
+		{
+			parent.removeChild(orphan);
+		}
 	}
 
 	List<TrackedRecipe> getTrackedRecipes()
@@ -686,12 +714,30 @@ public class RecipeTrackerPlugin extends Plugin
 
 		List<TrackedRecipe> trackedSnapshot = trackedRecipes;
 		statuses = MaterialCalculator.calculateAll(trackedSnapshot, counts, bankCounts);
+		Map<TrackedRecipe, List<MaterialStatus>> perGoal = new IdentityHashMap<>();
+		for (TrackedRecipe tracked : trackedSnapshot)
+		{
+			collectGoalStatuses(tracked, counts, bankCounts, perGoal);
+		}
+		goalStatuses = Collections.unmodifiableMap(perGoal);
 		RecipeTrackerPanel currentPanel = panel;
 		if (currentPanel != null)
 		{
 			List<MaterialStatus> snapshot = statuses;
+			Map<TrackedRecipe, List<MaterialStatus>> goalSnapshot = goalStatuses;
 			boolean bankAvailable = bankSnapshotAvailable;
-			SwingUtilities.invokeLater(() -> currentPanel.updateTracking(trackedSnapshot, snapshot, bankAvailable));
+			SwingUtilities.invokeLater(() -> currentPanel.updateTracking(
+				trackedSnapshot, goalSnapshot, snapshot, bankAvailable));
+		}
+	}
+
+	private static void collectGoalStatuses(TrackedRecipe tracked, Map<Integer, Integer> inventory,
+		Map<Integer, Integer> bank, Map<TrackedRecipe, List<MaterialStatus>> destination)
+	{
+		destination.put(tracked, MaterialCalculator.calculateDirect(tracked, inventory, bank));
+		for (TrackedRecipe child : tracked.getChildren())
+		{
+			collectGoalStatuses(child, inventory, bank, destination);
 		}
 	}
 
@@ -833,66 +879,135 @@ public class RecipeTrackerPlugin extends Plugin
 	private void loadTrackedRecipes()
 	{
 		String saved = configManager.getConfiguration(RecipeTrackerConfig.GROUP, TRACKED_RECIPE_KEYS);
-		synchronized (trackedQuantities)
+		synchronized (trackedLock)
 		{
-			trackedQuantities.clear();
+			List<TrackedRecipe> restored = new ArrayList<>();
 			if (saved != null && !saved.trim().isEmpty())
 			{
-				for (String entry : saved.split(";"))
+				if (saved.trim().startsWith("["))
 				{
-					int separator = entry.lastIndexOf('=');
 					try
 					{
-						String key = entry.substring(0, separator);
-						int quantity = Integer.parseInt(entry.substring(separator + 1));
-						if (recipeRepository.findByKey(key) != null)
+						List<TrackedRecipeState> states = gson.fromJson(saved, TRACKED_STATES_TYPE);
+						if (states != null)
 						{
-							trackedQuantities.put(key, Math.max(1, Math.min(10000, quantity)));
+							for (TrackedRecipeState state : states)
+							{
+								TrackedRecipe tracked = restoreTrackedRecipe(state);
+								if (tracked != null)
+								{
+									restored.add(tracked);
+								}
+							}
 						}
 					}
-					catch (NumberFormatException ignored)
+					catch (RuntimeException ignored)
 					{
-						// Ignore an invalid saved entry and continue loading the others.
+						// A malformed tree should not prevent the plugin from starting.
 					}
 				}
+				else
+				{
+					restoreFlatTrackedRecipes(saved, restored);
+				}
 			}
-			else
+			else if (saved == null)
 			{
-				migrateLegacyTrackedRecipes();
+				migrateLegacyTrackedRecipes(restored);
 			}
-			rebuildTrackedRecipes();
+			for (TrackedRecipe tracked : restored)
+			{
+				synchronizeChildQuantities(tracked);
+			}
+			trackedRecipes = Collections.unmodifiableList(restored);
+			if (saved != null && !saved.trim().isEmpty() && !saved.trim().startsWith("["))
+			{
+				saveTrackedRecipes();
+			}
+			else if (saved == null && !restored.isEmpty())
+			{
+				saveTrackedRecipes();
+			}
 		}
 	}
 
-	private void rebuildTrackedRecipes()
+	private TrackedRecipe restoreTrackedRecipe(TrackedRecipeState state)
 	{
-		List<TrackedRecipe> rebuilt = new ArrayList<>();
-		for (Map.Entry<String, Integer> entry : trackedQuantities.entrySet())
+		if (state == null || state.recipeKey == null)
 		{
-			Recipe recipe = recipeRepository.findByKey(entry.getKey());
-			if (recipe != null)
+			return null;
+		}
+		Recipe recipe = recipeRepository.findByKey(state.recipeKey);
+		if (recipe == null)
+		{
+			return null;
+		}
+		TrackedRecipe tracked = new TrackedRecipe(recipe, state.quantity);
+		tracked.setCollapsed(state.collapsed);
+		if (state.children != null)
+		{
+			for (TrackedRecipeState childState : state.children)
 			{
-				rebuilt.add(new TrackedRecipe(recipe, entry.getValue()));
+				TrackedRecipe child = restoreTrackedRecipe(childState);
+				if (child != null)
+				{
+					tracked.addChild(child);
+				}
 			}
 		}
-		trackedRecipes = Collections.unmodifiableList(rebuilt);
+		return tracked;
 	}
 
 	private void saveTrackedRecipes()
 	{
-		StringBuilder saved = new StringBuilder();
-		for (Map.Entry<String, Integer> entry : trackedQuantities.entrySet())
+		List<TrackedRecipeState> states = new ArrayList<>();
+		for (TrackedRecipe tracked : trackedRecipes)
 		{
-			if (saved.length() > 0)
-			{
-				saved.append(';');
-			}
-			saved.append(entry.getKey()).append('=').append(entry.getValue());
+			states.add(toState(tracked));
 		}
-		configManager.setConfiguration(RecipeTrackerConfig.GROUP, TRACKED_RECIPE_KEYS, saved.toString());
+		configManager.setConfiguration(RecipeTrackerConfig.GROUP, TRACKED_RECIPE_KEYS,
+			gson.toJson(states, TRACKED_STATES_TYPE));
 	}
 
-	private void migrateLegacyTrackedRecipes()
+	private static TrackedRecipeState toState(TrackedRecipe tracked)
+	{
+		TrackedRecipeState state = new TrackedRecipeState();
+		state.recipeKey = tracked.getRecipe().getKey();
+		state.quantity = tracked.getQuantity();
+		state.collapsed = tracked.isCollapsed();
+		for (TrackedRecipe child : tracked.getChildren())
+		{
+			state.children.add(toState(child));
+		}
+		return state;
+	}
+
+	private void restoreFlatTrackedRecipes(String saved, List<TrackedRecipe> destination)
+	{
+		for (String entry : saved.split(";"))
+		{
+			int separator = entry.lastIndexOf('=');
+			if (separator <= 0)
+			{
+				continue;
+			}
+			try
+			{
+				Recipe recipe = recipeRepository.findByKey(entry.substring(0, separator));
+				int quantity = Integer.parseInt(entry.substring(separator + 1));
+				if (recipe != null)
+				{
+					destination.add(new TrackedRecipe(recipe, quantity));
+				}
+			}
+			catch (NumberFormatException ignored)
+			{
+				// Ignore one malformed legacy entry and continue loading the others.
+			}
+		}
+	}
+
+	private void migrateLegacyTrackedRecipes(List<TrackedRecipe> destination)
 	{
 		String legacy = configManager.getConfiguration(RecipeTrackerConfig.GROUP, LEGACY_TRACKED_RECIPES_KEY);
 		if (legacy == null) return;
@@ -907,14 +1022,13 @@ public class RecipeTrackerPlugin extends Plugin
 				{
 					if (recipe.getOutputItemId() == id)
 					{
-						trackedQuantities.put(recipe.getKey(), quantity);
+						destination.add(new TrackedRecipe(recipe, quantity));
 						break;
 					}
 				}
 			}
 			catch (NumberFormatException ignored) { }
 		}
-		saveTrackedRecipes();
 	}
 
 	@Provides

@@ -15,6 +15,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -29,6 +30,8 @@ public class RecipeRepository
 	private final Map<String, Recipe> recipesByKey = new LinkedHashMap<>();
 	private final Map<String, RecipeDefinition> cachedDefinitions = new LinkedHashMap<>();
 	private volatile List<Recipe> snapshot = Collections.emptyList();
+	private volatile Map<Integer, Recipe> craftingRecipesByOutputId = Collections.emptyMap();
+	private volatile Map<String, Recipe> craftingRecipesByName = Collections.emptyMap();
 	private volatile ItemIndex itemIndex;
 
 	@Inject
@@ -74,6 +77,41 @@ public class RecipeRepository
 	public Recipe find(int itemId, String target)
 	{
 		return RecipeResolver.find(snapshot, itemId, target);
+	}
+
+	Recipe findCraftingRecipe(MaterialRequirement material)
+	{
+		Recipe best = null;
+		Map<Integer, Recipe> byOutputId = craftingRecipesByOutputId;
+		for (int acceptedId : material.getAcceptedItemIds())
+		{
+			Recipe candidate = byOutputId.get(acceptedId);
+			if (candidate != null && (best == null || compareCraftingRecipes(candidate, best) < 0))
+			{
+				best = candidate;
+			}
+		}
+		Recipe named = craftingRecipesByName.get(normalizeName(material.getName()));
+		if (named != null && (best == null || compareCraftingRecipes(named, best) < 0))
+		{
+			best = named;
+		}
+		return best;
+	}
+
+	private static int compareCraftingRecipes(Recipe first, Recipe second)
+	{
+		if (first.getMaterials().size() != second.getMaterials().size())
+		{
+			return Integer.compare(first.getMaterials().size(), second.getMaterials().size());
+		}
+		double firstTotal = first.getMaterials().stream()
+			.mapToDouble(MaterialRequirement::getQuantityPerCraft).sum();
+		double secondTotal = second.getMaterials().stream()
+			.mapToDouble(MaterialRequirement::getQuantityPerCraft).sum();
+		int totalComparison = Double.compare(secondTotal, firstTotal);
+		return totalComparison != 0 ? totalComparison
+			: first.getName().compareToIgnoreCase(second.getName());
 	}
 
 	public synchronized Recipe addDefinition(RecipeDefinition definition, RecipeSource source, boolean persist)
@@ -252,7 +290,33 @@ public class RecipeRepository
 	{
 		List<Recipe> recipes = new ArrayList<>(recipesByKey.values());
 		recipes.sort(Comparator.comparing(Recipe::getCategory).thenComparing(Recipe::getName));
+		Map<Integer, Recipe> byOutputId = new LinkedHashMap<>();
+		Map<String, Recipe> byName = new LinkedHashMap<>();
+		for (Recipe recipe : recipes)
+		{
+			if (recipe.getMaterials().isEmpty())
+			{
+				continue;
+			}
+			if (recipe.getOutputItemId() > 0)
+			{
+				byOutputId.merge(recipe.getOutputItemId(), recipe, RecipeRepository::preferredCraftingRecipe);
+			}
+			byName.merge(normalizeName(recipe.getName()), recipe, RecipeRepository::preferredCraftingRecipe);
+		}
 		snapshot = Collections.unmodifiableList(recipes);
+		craftingRecipesByOutputId = Collections.unmodifiableMap(byOutputId);
+		craftingRecipesByName = Collections.unmodifiableMap(byName);
+	}
+
+	private static Recipe preferredCraftingRecipe(Recipe first, Recipe second)
+	{
+		return compareCraftingRecipes(first, second) <= 0 ? first : second;
+	}
+
+	private static String normalizeName(String name)
+	{
+		return name == null ? "" : name.trim().toLowerCase(Locale.ENGLISH);
 	}
 
 	private void writeCache()

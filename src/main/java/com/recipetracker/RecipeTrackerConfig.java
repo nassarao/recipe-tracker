@@ -34,7 +34,7 @@ public interface RecipeTrackerConfig extends Config
 	@ConfigItem(
 		keyName = "captureBuildClicks",
 		name = "Track build-interface clicks",
-		description = "Track recipes selected in Construction and Sailing build interfaces",
+		description = "Passively track recipes selected in Construction and Sailing build interfaces",
 		position = 2
 	)
 	default boolean captureBuildClicks()

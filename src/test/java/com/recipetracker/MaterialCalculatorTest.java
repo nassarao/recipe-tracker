@@ -108,4 +108,53 @@ public class MaterialCalculatorTest
 		assertFalse(status.isComplete());
 		assertFalse(status.isAvailable());
 	}
+
+	@Test
+	public void expandedSubRecipeReplacesIntermediateMaterial()
+	{
+		Recipe table = new Recipe(100, "Table", "Construction", 1,
+			new MaterialRequirement(2, "Plank", 4),
+			new MaterialRequirement(3, "Nails", 8));
+		Recipe planks = new Recipe(2, "Plank", "Woodcutting", 1,
+			new MaterialRequirement(1, "Logs", 1));
+		TrackedRecipe goal = new TrackedRecipe(table, 2);
+		goal.addChild(new TrackedRecipe(planks, 8));
+
+		List<MaterialStatus> result = MaterialCalculator.calculateAll(
+			Collections.singletonList(goal), Collections.emptyMap());
+
+		assertEquals(2, result.size());
+		assertEquals("Logs", result.get(0).getName());
+		assertEquals(8, result.get(0).getRequired());
+		assertEquals("Nails", result.get(1).getName());
+		assertEquals(16, result.get(1).getRequired());
+	}
+
+	@Test
+	public void recursiveExpansionHonorsBatchOutputsAndCountsToolsOnce()
+	{
+		MaterialRequirement hammer = new MaterialRequirement(2347, "Hammer", 1);
+		Recipe fixture = new Recipe(100, "Fixture", "Construction", 1,
+			new MaterialRequirement(4819, "Bronze nails", 20)).withTools(hammer);
+		Recipe nails = new Recipe(4819, "Bronze nails", "Smithing", 15,
+			new MaterialRequirement(2349, "Bronze bar", 1)).withTools(hammer);
+		Recipe bar = new Recipe(2349, "Bronze bar", "Smithing", 1,
+			new MaterialRequirement(436, "Copper ore", 1),
+			new MaterialRequirement(438, "Tin ore", 1));
+		TrackedRecipe root = new TrackedRecipe(fixture, 1);
+		TrackedRecipe nailGoal = new TrackedRecipe(nails, 20);
+		nailGoal.addChild(new TrackedRecipe(bar, 2));
+		root.addChild(nailGoal);
+
+		List<MaterialStatus> result = MaterialCalculator.calculateAll(
+			Collections.singletonList(root), Collections.emptyMap());
+
+		assertEquals(3, result.size());
+		assertEquals("Copper ore", result.get(0).getName());
+		assertEquals(2, result.get(0).getRequired());
+		assertEquals("Tin ore", result.get(1).getName());
+		assertEquals(2, result.get(1).getRequired());
+		assertEquals("Hammer", result.get(2).getName());
+		assertEquals(1, result.get(2).getRequired());
+	}
 }

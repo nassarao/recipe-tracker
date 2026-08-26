@@ -2,9 +2,12 @@ package com.recipetracker;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public final class MaterialCalculator
 {
@@ -20,16 +23,24 @@ public final class MaterialCalculator
 			return Collections.emptyList();
 		}
 
-		int crafts = Math.max(1,
-			(targetQuantity + recipe.getOutputQuantity() - 1) / recipe.getOutputQuantity());
-		List<MaterialStatus> result = new ArrayList<>();
-		for (MaterialRequirement material : recipe.getMaterials())
+		return calculateDirect(new TrackedRecipe(recipe, targetQuantity), inventory,
+			Collections.emptyMap());
+	}
+
+	static List<MaterialStatus> calculateDirect(TrackedRecipe tracked,
+		Map<Integer, Integer> inventory, Map<Integer, Integer> bank)
+	{
+		Map<String, RequirementTotal> totals = new LinkedHashMap<>();
+		int crafts = craftsFor(tracked.getRecipe(), tracked.getQuantity());
+		for (MaterialRequirement material : tracked.getRecipe().getMaterials())
 		{
-			int required = (int) Math.ceil(material.getQuantityPerCraft() * crafts);
-			result.add(new MaterialStatus(material.getName(), required,
-				inventory.getOrDefault(material.getItemId(), 0)));
+			add(totals, material, required(material, crafts), false);
 		}
-		return Collections.unmodifiableList(result);
+		for (MaterialRequirement tool : tracked.getRecipe().getTools())
+		{
+			add(totals, tool, 1, true);
+		}
+		return statuses(totals, inventory, bank);
 	}
 
 	public static List<MaterialStatus> calculateAll(List<TrackedRecipe> trackedRecipes,
@@ -41,22 +52,47 @@ public final class MaterialCalculator
 	public static List<MaterialStatus> calculateAll(List<TrackedRecipe> trackedRecipes,
 		Map<Integer, Integer> inventory, Map<Integer, Integer> bank)
 	{
-		Map<Integer, RequirementTotal> totals = new LinkedHashMap<>();
+		Map<String, RequirementTotal> totals = new LinkedHashMap<>();
 		for (TrackedRecipe tracked : trackedRecipes)
 		{
-			Recipe recipe = tracked.getRecipe();
-			int crafts = Math.max(1, (tracked.getQuantity() + recipe.getOutputQuantity() - 1)
-				/ recipe.getOutputQuantity());
-			for (MaterialRequirement material : recipe.getMaterials())
+			Set<TrackedRecipe> ancestors = Collections.newSetFromMap(new IdentityHashMap<>());
+			accumulate(tracked, tracked.getQuantity(), totals, ancestors);
+		}
+		return statuses(totals, inventory, bank);
+	}
+
+	private static void accumulate(TrackedRecipe tracked, int targetQuantity,
+		Map<String, RequirementTotal> totals, Set<TrackedRecipe> ancestors)
+	{
+		if (!ancestors.add(tracked))
+		{
+			return;
+		}
+		Recipe recipe = tracked.getRecipe();
+		int crafts = craftsFor(recipe, targetQuantity);
+		for (MaterialRequirement material : recipe.getMaterials())
+		{
+			int amount = required(material, crafts);
+			TrackedRecipe child = tracked.childFor(material);
+			if (child == null)
 			{
-				add(totals, material, (int) Math.ceil(material.getQuantityPerCraft() * crafts), false);
+				add(totals, material, amount, false);
 			}
-			for (MaterialRequirement tool : recipe.getTools())
+			else
 			{
-				add(totals, tool, 1, true);
+				accumulate(child, amount, totals, ancestors);
 			}
 		}
+		for (MaterialRequirement tool : recipe.getTools())
+		{
+			add(totals, tool, 1, true);
+		}
+		ancestors.remove(tracked);
+	}
 
+	private static List<MaterialStatus> statuses(Map<String, RequirementTotal> totals,
+		Map<Integer, Integer> inventory, Map<Integer, Integer> bank)
+	{
 		List<MaterialStatus> result = new ArrayList<>();
 		for (RequirementTotal total : totals.values())
 		{
@@ -73,13 +109,26 @@ public final class MaterialCalculator
 		return Collections.unmodifiableList(result);
 	}
 
-	private static void add(Map<Integer, RequirementTotal> totals, MaterialRequirement requirement,
+	private static int craftsFor(Recipe recipe, int targetQuantity)
+	{
+		return Math.max(1, (targetQuantity + recipe.getOutputQuantity() - 1)
+			/ recipe.getOutputQuantity());
+	}
+
+	private static int required(MaterialRequirement material, int crafts)
+	{
+		return (int) Math.ceil(material.getQuantityPerCraft() * crafts);
+	}
+
+	private static void add(Map<String, RequirementTotal> totals, MaterialRequirement requirement,
 		int amount, boolean tool)
 	{
-		RequirementTotal total = totals.get(requirement.getItemId());
+		String key = requirement.getItemId() > 0 ? "id:" + requirement.getItemId()
+			: "name:" + requirement.getName().toLowerCase(Locale.ENGLISH);
+		RequirementTotal total = totals.get(key);
 		if (total == null)
 		{
-			totals.put(requirement.getItemId(), new RequirementTotal(requirement, amount, tool));
+			totals.put(key, new RequirementTotal(requirement, amount, tool));
 		}
 		else if (!tool)
 		{
