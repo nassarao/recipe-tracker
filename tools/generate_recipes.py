@@ -255,7 +255,10 @@ def build_recipes(items, item_names, aliases):
                 skipped["makes itself"] += 1
                 continue
 
-            output_quantity = parse_quantity(output.get("quantity")) or 1
+            # Recipe Tracker targets whole output items. Wiki rows occasionally
+            # express an average/fractional yield, which cannot be represented
+            # as a target quantity and therefore safely clamps to one.
+            output_quantity = max(1, round(parse_quantity(output.get("quantity")) or 1))
             tools = parse_tools(data.get("tools"), items, item_names, aliases)
             skills = data.get("skills") or []
             category = clean(skills[0].get("name")) if skills and isinstance(skills[0], dict) else "Other"
