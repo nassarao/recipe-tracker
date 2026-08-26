@@ -30,4 +30,26 @@ public interface RecipeTrackerConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "captureBuildClicks",
+		name = "Track build-interface clicks",
+		description = "Track recipes selected in Construction and Sailing build interfaces",
+		position = 2
+	)
+	default boolean captureBuildClicks()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "requireShiftForBuildClicks",
+		name = "Require Shift for build clicks",
+		description = "Only track Construction and Sailing interface selections while Shift is held",
+		position = 3
+	)
+	default boolean requireShiftForBuildClicks()
+	{
+		return true;
+	}
 }

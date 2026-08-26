@@ -8,8 +8,10 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
@@ -23,6 +25,7 @@ import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.Varbits;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.ItemContainerChanged;
@@ -30,6 +33,7 @@ import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
@@ -52,6 +56,7 @@ public class RecipeTrackerPlugin extends Plugin
 	private static final String TRACKED_RECIPE_KEYS = "trackedRecipeKeys";
 	private static final String LEGACY_TRACKED_RECIPES_KEY = "trackedRecipes";
 	private static final String BANK_SNAPSHOT_KEY = "bankSnapshot";
+	private static final long SAILING_CAPTURE_WINDOW_NANOS = TimeUnit.SECONDS.toNanos(8);
 
 	@Inject private Client client;
 	@Inject private ClientThread clientThread;
@@ -73,6 +78,7 @@ public class RecipeTrackerPlugin extends Plugin
 	private final Set<Widget> modifiedSkillGuideWidgets =
 		Collections.newSetFromMap(new IdentityHashMap<>());
 	private String loadedBankProfileKey;
+	private long sailingCaptureDeadline;
 	private RecipeTrackerPanel panel;
 	private NavigationButton navigationButton;
 
@@ -128,6 +134,7 @@ public class RecipeTrackerPlugin extends Plugin
 		bankSnapshotAvailable = false;
 		clearLegacySkillGuideActions();
 		loadedBankProfileKey = null;
+		sailingCaptureDeadline = 0;
 	}
 
 	@Subscribe
@@ -181,11 +188,21 @@ public class RecipeTrackerPlugin extends Plugin
 		String option = event.getOption() == null ? "" : event.getOption().toLowerCase();
 		boolean checkMaterials = option.contains("check") && option.contains("material");
 		MenuEntry original = event.getMenuEntry();
+		int interfaceId = original.getParam1() > 0
+			? WidgetUtil.componentToInterface(original.getParam1()) : -1;
+		boolean buildInterface = config.captureBuildClicks()
+			&& (isConstructionInterface(interfaceId) || isSailingInterface(interfaceId));
 		boolean ordinaryItem = "examine".equals(option)
 			&& Math.max(event.getItemId(), original.getItemId()) > 0;
-		if (!shouldShowTrackMenu() || (!checkMaterials && !ordinaryItem)
+		if (!shouldShowTrackMenu()
+			|| (!checkMaterials && !ordinaryItem && !isBuildMenuCandidate(event, original, interfaceId))
 			|| menuAlreadyHasTrackEntry())
 		{
+			return;
+		}
+		if (buildInterface)
+		{
+			addBuildTrackMenuEntry(event, original, interfaceId);
 			return;
 		}
 
@@ -200,6 +217,76 @@ public class RecipeTrackerPlugin extends Plugin
 			return;
 		}
 		addTrackMenuEntry(menuItemId, outputName);
+	}
+
+	private boolean isBuildMenuCandidate(MenuEntryAdded event, MenuEntry original, int interfaceId)
+	{
+		if (!config.captureBuildClicks()
+			|| (!isConstructionInterface(interfaceId) && !isSailingInterface(interfaceId)))
+		{
+			return false;
+		}
+
+		if (resolveMenuItemId(event, original) > 0)
+		{
+			return true;
+		}
+		String option = Text.removeTags(event.getOption() == null ? "" : event.getOption()).trim();
+		String target = Text.removeTags(event.getTarget() == null ? "" : event.getTarget()).trim();
+		if (isNavigationTarget(option)
+			&& !(isSailingInterface(interfaceId) && "Upgrade".equalsIgnoreCase(option)))
+		{
+			return false;
+		}
+		return !target.isEmpty() && !isNavigationTarget(target)
+			|| isSailingInterface(interfaceId) && "Upgrade".equalsIgnoreCase(option);
+	}
+
+	private void addBuildTrackMenuEntry(MenuEntryAdded event, MenuEntry original, int interfaceId)
+	{
+		int itemId = resolveMenuItemId(event, original);
+		String outputName = itemName(itemId);
+		if (outputName.isEmpty())
+		{
+			outputName = Text.removeTags(event.getTarget() == null ? "" : event.getTarget()).trim();
+		}
+		boolean sailing = isSailingInterface(interfaceId);
+		boolean needsNativeAction = sailing
+			&& (outputName.isEmpty() || isNavigationTarget(outputName));
+		String menuTarget = needsNativeAction ? "Shipwright upgrade" : outputName;
+		final String recipeName = outputName;
+		final int recipeItemId = itemId;
+		final int originalParam0 = original.getParam0();
+		final int originalParam1 = original.getParam1();
+		final int originalIdentifier = original.getIdentifier();
+		final int originalItemId = original.getItemId();
+		final MenuAction originalType = original.getType();
+		final String originalOption = original.getOption();
+		final String originalTarget = original.getTarget();
+
+		client.getMenu().createMenuEntry(0)
+			.setOption("Track materials")
+			.setTarget(menuTarget)
+			.setType(MenuAction.RUNELITE)
+			.setItemId(itemId)
+			.setParam0(originalParam0)
+			.setParam1(originalParam1)
+			.onClick(menuEntry ->
+			{
+				if (sailing)
+				{
+					sailingCaptureDeadline = System.nanoTime() + SAILING_CAPTURE_WINDOW_NANOS;
+				}
+				if (!recipeName.isEmpty() && !isNavigationTarget(recipeName))
+				{
+					trackWikiRecipe(recipeName, recipeRepository.find(recipeItemId, recipeName));
+				}
+				if (needsNativeAction)
+				{
+					client.menuAction(originalParam0, originalParam1, originalType,
+						originalIdentifier, originalItemId, originalOption, originalTarget);
+				}
+			});
 	}
 
 	private void addTrackMenuEntry(int itemId, String outputName)
@@ -223,19 +310,129 @@ public class RecipeTrackerPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		if (!"Track materials".equalsIgnoreCase(event.getMenuOption()))
+		if ("Track materials".equalsIgnoreCase(event.getMenuOption()))
+		{
+			int component = event.getParam1();
+			int interfaceId = component > 0 ? WidgetUtil.componentToInterface(component) : -1;
+			if (isConstructionInterface(interfaceId) || isSailingInterface(interfaceId))
+			{
+				// Build-interface entries have their own callback because Shipwright's
+				// generic Upgrade action must be replayed to obtain its materials line.
+				return;
+			}
+			event.consume();
+			Widget widget = resolveMenuWidget(event.getMenuEntry());
+			int itemId = widget == null ? -1 : itemManager.canonicalize(widget.getItemId());
+			String outputName = itemName(itemId);
+			if (itemId > 0 && !outputName.isEmpty())
+			{
+				trackResolvedItem(itemId, outputName);
+			}
+			return;
+		}
+		captureBuildInterfaceClick(event);
+	}
+
+	private void captureBuildInterfaceClick(MenuOptionClicked event)
+	{
+		if (!shouldCaptureBuildClick())
 		{
 			return;
 		}
 
-		event.consume();
-		Widget widget = resolveMenuWidget(event.getMenuEntry());
-		int itemId = widget == null ? -1 : itemManager.canonicalize(widget.getItemId());
-		String outputName = itemName(itemId);
-		if (itemId > 0 && !outputName.isEmpty())
+		int component = event.getParam1();
+		int interfaceId = component > 0 ? WidgetUtil.componentToInterface(component) : -1;
+		if (!isConstructionInterface(interfaceId) && !isSailingInterface(interfaceId))
 		{
-			trackResolvedItem(itemId, outputName);
+			return;
 		}
+
+		if (isSailingInterface(interfaceId))
+		{
+			sailingCaptureDeadline = System.nanoTime() + SAILING_CAPTURE_WINDOW_NANOS;
+		}
+
+		int itemId = clickedItemId(event);
+		String outputName = itemName(itemId);
+		if (outputName.isEmpty())
+		{
+			outputName = Text.removeTags(event.getMenuTarget() == null ? "" : event.getMenuTarget()).trim();
+		}
+		if (outputName.isEmpty() || isNavigationTarget(outputName))
+		{
+			return;
+		}
+
+		trackWikiRecipe(outputName, recipeRepository.find(itemId, outputName));
+	}
+
+	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		if (!config.captureBuildClicks() || event.getType() != ChatMessageType.GAMEMESSAGE
+			|| sailingCaptureDeadline == 0 || System.nanoTime() - sailingCaptureDeadline > 0)
+		{
+			return;
+		}
+
+		Optional<RecipeDefinition> captured = NativeRecipeCapture.parseSailingMaterials(
+			Text.removeTags(event.getMessage()));
+		if (!captured.isPresent())
+		{
+			return;
+		}
+		sailingCaptureDeadline = 0;
+		RecipeDefinition definition = captured.get();
+		executor.execute(() ->
+		{
+			Recipe recipe = recipeRepository.addDefinition(definition, RecipeSource.NATIVE_CAPTURE, true);
+			onRepositoryChanged();
+			clientThread.invokeLater(() ->
+			{
+				trackRecipe(recipe);
+				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+					"Recipe Tracker: captured the Shipwright recipe for " + recipe.getName() + ".", null);
+			});
+		});
+	}
+
+	private boolean shouldCaptureBuildClick()
+	{
+		return panel != null && config.captureBuildClicks()
+			&& (!config.requireShiftForBuildClicks() || client.isKeyPressed(KeyCode.KC_SHIFT));
+	}
+
+	private int clickedItemId(MenuOptionClicked event)
+	{
+		int itemId = event.getItemId();
+		if (itemId <= 0)
+		{
+			Widget widget = resolveMenuWidget(event.getMenuEntry());
+			itemId = widget == null ? -1 : widget.getItemId();
+		}
+		return itemId > 0 ? itemManager.canonicalize(itemId) : -1;
+	}
+
+	static boolean isConstructionInterface(int interfaceId)
+	{
+		return interfaceId == InterfaceID.POH_FURNITURE_CREATION
+			|| interfaceId == InterfaceID.POH_FURNITURE_CREATION_MENU;
+	}
+
+	static boolean isSailingInterface(int interfaceId)
+	{
+		return interfaceId == InterfaceID.SAILING_CUSTOMISATION
+			|| interfaceId == InterfaceID.SAILING_BOAT_SELECTION
+			|| interfaceId == InterfaceID.SAILING_BT_SELECTION
+			|| interfaceId == InterfaceID.SAILING_MENU;
+	}
+
+	private static boolean isNavigationTarget(String target)
+	{
+		return "View".equalsIgnoreCase(target) || "Close".equalsIgnoreCase(target)
+			|| "Back".equalsIgnoreCase(target) || "Select".equalsIgnoreCase(target)
+			|| "Continue".equalsIgnoreCase(target) || "Check".equalsIgnoreCase(target)
+			|| "Upgrade".equalsIgnoreCase(target);
 	}
 
 	private void addLegacySkillGuideActions(Widget widget)

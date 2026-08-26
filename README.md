@@ -8,6 +8,8 @@ Recipe Tracker is a RuneLite Plugin Hub-style plugin for choosing a craftable it
 - Fetch and locally cache only recipes that you select.
 - Add **Track materials** beside RuneLite's native **Check materials** menu option and fetch the selected output's Wiki recipe.
 - Right-click any item to request its Wiki recipe. The menu entry can be set to **Always**, **Shift + right-click**, or **Disabled** in the plugin settings.
+- Shift-click Construction furniture or use its right-click **Track materials** option to fetch and cache its live Wiki recipe.
+- Shift-click Sailing and Shipwright selections or use **Track materials** from their right-click menus; when the game prints a materials line, the exact recipe and quantities are captured locally.
 - Set a target output quantity; multi-output recipes such as cannonballs round up correctly.
 - See `inventory / required` counts in both the RuneLite sidebar and an in-game overlay.
 - Completed material rows turn green as soon as the inventory contains enough.
@@ -28,7 +30,7 @@ Run the automated checks with `./gradlew test`.
 
 ## Recipe sources
 
-The OSRS Wiki API is the sole recipe source. For **Check materials** entries where RuneLite does not expose an item name, Recipe Tracker replays the original action and recovers the exact output name from the game response before requesting that Wiki page. Cached recipes are refreshed when selected; if the Wiki is unavailable, the cached copy is used. API requests run asynchronously and never block the client thread.
+The OSRS Wiki API supplies searchable recipes, including Construction furniture selected from build interfaces. Shipwright materials messages are the one native recipe source: after a Shift-click in a Sailing interface, Recipe Tracker captures the exact part name and quantities printed by the game. Both Wiki and native recipes are cached locally. Cached Wiki recipes are refreshed when selected; if the Wiki is unavailable, the cached copy is used. API requests and cache writes run asynchronously and never block the client thread.
 
 ## Plugin Hub packaging
 

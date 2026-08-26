@@ -1,5 +1,6 @@
 .gradle/
 build/
+build*/
 out/
 .idea/
 *.iml
@@ -7,4 +8,3 @@ out/
 *.iws
 .vscode/
 *.log
-

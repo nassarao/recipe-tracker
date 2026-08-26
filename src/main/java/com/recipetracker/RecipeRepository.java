@@ -125,7 +125,8 @@ public class RecipeRepository
 			try
 			{
 				if (rememberForCache && definition.source != null
-					&& !RecipeSource.WIKI_CACHE.name().equals(definition.source))
+					&& !RecipeSource.WIKI_CACHE.name().equals(definition.source)
+					&& !RecipeSource.NATIVE_CAPTURE.name().equals(definition.source))
 				{
 					continue;
 				}
