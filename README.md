@@ -4,8 +4,8 @@ Recipe Tracker is a RuneLite Plugin Hub-style plugin for choosing a craftable it
 
 ## Features
 
-- Type ahead against the live OSRS Wiki instead of downloading a giant recipe catalog.
-- Fetch and locally cache only recipes that you select.
+- Search a bundled, offline index generated from the OSRS Wiki's structured recipe data.
+- Fall back to a live Wiki lookup and local cache when a recipe is absent from the bundle.
 - Add **Track materials** beside RuneLite's native **Check materials** menu option and fetch the selected output's Wiki recipe.
 - Right-click any item to request its Wiki recipe. The menu entry can be set to **Always**, **Shift + right-click**, or **Disabled** in the plugin settings.
 - Shift-click Construction furniture or use its right-click **Track materials** option to fetch and cache its live Wiki recipe.
@@ -18,7 +18,7 @@ Recipe Tracker is a RuneLite Plugin Hub-style plugin for choosing a craftable it
 - Tracked stable recipe keys and quantities persist between client sessions.
 - RuneLite's local item cache supplies canonical IDs and icons.
 
-Live Wiki results require a network connection; previously selected Wiki recipes remain available from the local cache. No recipe catalog is bundled with the plugin. A Wiki search result that is not makeable will be rejected when selected because its page has no supported `Recipe` template.
+Bundled recipes work without a network connection. A live Wiki fallback result that is not makeable will be rejected when selected because its page has no supported `Recipe` template.
 
 ## Run locally
 
@@ -30,7 +30,9 @@ Run the automated checks with `./gradlew test`.
 
 ## Recipe sources
 
-The OSRS Wiki API supplies searchable recipes, including Construction furniture selected from build interfaces. Shipwright materials messages are the one native recipe source: after a Shift-click in a Sailing interface, Recipe Tracker captures the exact part name and quantities printed by the game. Both Wiki and native recipes are cached locally. Cached Wiki recipes are refreshed when selected; if the Wiki is unavailable, the cached copy is used. API requests and cache writes run asynchronously and never block the client thread.
+The bundled recipe index is generated from the OSRS Wiki's `recipe`, `infobox_item`, `infobox_construction`, and `infobox_ship_part` buckets. It provides instant offline search; live Wiki requests are only used when no bundled recipe matches. Shipwright materials messages are the native recipe source: after a Shift-click in a Sailing interface, Recipe Tracker captures the exact part name and quantities printed by the game. Live Wiki and native recipes are cached locally. API requests and cache writes run asynchronously and never block the client thread.
+
+Refresh the bundle with `python tools/generate_recipes.py`. Attribution and data licensing details are in `THIRD_PARTY_NOTICES.md`.
 
 ## Plugin Hub packaging
 

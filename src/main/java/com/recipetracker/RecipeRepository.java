@@ -5,7 +5,10 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -38,6 +41,7 @@ public class RecipeRepository
 	{
 		recipesByKey.clear();
 		cachedDefinitions.clear();
+		loadBundled();
 		loadCache();
 		publish();
 	}
@@ -96,6 +100,25 @@ public class RecipeRepository
 	{
 		ItemIndex index = itemIndex;
 		return index == null ? null : index.findName(id);
+	}
+
+	private void loadBundled()
+	{
+		try (InputStream stream = RecipeRepository.class.getResourceAsStream("recipes.json"))
+		{
+			if (stream == null)
+			{
+				return;
+			}
+			try (Reader reader = new InputStreamReader(stream, StandardCharsets.UTF_8))
+			{
+				mergeFile(gson.fromJson(reader, RecipeFile.class), RecipeSource.BUNDLED_WIKI, false);
+			}
+		}
+		catch (IOException | RuntimeException ignored)
+		{
+			// A missing or malformed bundle must not prevent cached/live recipes.
+		}
 	}
 
 	private void loadCache()

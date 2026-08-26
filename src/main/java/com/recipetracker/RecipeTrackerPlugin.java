@@ -279,7 +279,7 @@ public class RecipeTrackerPlugin extends Plugin
 				}
 				if (!recipeName.isEmpty() && !isNavigationTarget(recipeName))
 				{
-					trackWikiRecipe(recipeName, recipeRepository.find(recipeItemId, recipeName));
+					trackResolvedRecipeOrWiki(recipeItemId, recipeName);
 				}
 				if (needsNativeAction)
 				{
@@ -304,7 +304,20 @@ public class RecipeTrackerPlugin extends Plugin
 
 	private void trackResolvedItem(int itemId, String outputName)
 	{
-		trackWikiRecipe(outputName, recipeRepository.find(itemId, outputName));
+		trackResolvedRecipeOrWiki(itemId, outputName);
+	}
+
+	private void trackResolvedRecipeOrWiki(int itemId, String outputName)
+	{
+		Recipe recipe = recipeRepository.find(itemId, outputName);
+		if (recipe != null)
+		{
+			trackRecipe(recipe);
+		}
+		else
+		{
+			trackWikiRecipe(outputName, null);
+		}
 	}
 
 	@Subscribe
@@ -363,7 +376,7 @@ public class RecipeTrackerPlugin extends Plugin
 			return;
 		}
 
-		trackWikiRecipe(outputName, recipeRepository.find(itemId, outputName));
+		trackResolvedRecipeOrWiki(itemId, outputName);
 	}
 
 	@Subscribe

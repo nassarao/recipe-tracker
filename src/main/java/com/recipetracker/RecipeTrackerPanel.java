@@ -8,6 +8,8 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Image;
 import java.awt.Rectangle;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import javax.swing.BorderFactory;
@@ -37,6 +39,7 @@ import net.runelite.client.util.AsyncBufferedImage;
 
 public class RecipeTrackerPanel extends PluginPanel
 {
+	private static final int MAX_LOCAL_RESULTS = 50;
 	private static final Color COMPLETE = new Color(64, 196, 99);
 	private static final Color MISSING = new Color(255, 115, 105);
 
@@ -112,9 +115,7 @@ public class RecipeTrackerPanel extends PluginPanel
 			RecipeSearchEntry entry = recipeList.getSelectedValue();
 			if (!e.getValueIsAdjusting() && !changingSelection && entry != null)
 			{
-				if (entry.isWikiLookup()
-					|| entry.getRecipe().getSource() == RecipeSource.WIKI_CACHE
-					|| entry.getRecipe().getSource() == RecipeSource.BUNDLED_WIKI)
+				if (entry.isWikiLookup())
 				{
 					plugin.trackWikiRecipe(entry.getName(), entry.getRecipe());
 				}
@@ -228,26 +229,58 @@ public class RecipeTrackerPanel extends PluginPanel
 	private void filterRecipes()
 	{
 		String query = searchField.getText().trim().toLowerCase(Locale.ENGLISH);
+		wikiSearchTimer.stop();
 		changingSelection = true;
 		listModel.clear();
+		if (query.length() < 2)
+		{
+			searchField.setToolTipText("Type at least two characters to search recipes");
+			recipeList.clearSelection();
+			changingSelection = false;
+			return;
+		}
+
+		List<Recipe> matches = new ArrayList<>();
 		for (Recipe recipe : recipes)
 		{
-			boolean queryMatches = query.isEmpty()
-				|| recipe.getName().toLowerCase(Locale.ENGLISH).contains(query);
-			if (queryMatches)
+			if (recipe.getName().toLowerCase(Locale.ENGLISH).contains(query))
 			{
-				listModel.addElement(RecipeSearchEntry.local(recipe));
+				matches.add(recipe);
 			}
+		}
+		matches.sort(Comparator.comparingInt(recipe -> searchRank(recipe.getName(), query))
+			.thenComparing(Recipe::getName, String.CASE_INSENSITIVE_ORDER));
+		for (int i = 0; i < Math.min(matches.size(), MAX_LOCAL_RESULTS); i++)
+		{
+			listModel.addElement(RecipeSearchEntry.local(matches.get(i)));
 		}
 		recipeList.clearSelection();
 		changingSelection = false;
-		wikiSearchTimer.restart();
+		if (matches.isEmpty())
+		{
+			searchField.setToolTipText("No bundled recipe found; searching the OSRS Wiki...");
+			wikiSearchTimer.restart();
+		}
+		else
+		{
+			searchField.setToolTipText("Bundled recipes; click one to track it");
+		}
+	}
+
+	private static int searchRank(String name, String query)
+	{
+		String lower = name.toLowerCase(Locale.ENGLISH);
+		if (lower.equals(query))
+		{
+			return 0;
+		}
+		return lower.startsWith(query) ? 1 : 2;
 	}
 
 	private void requestWikiResults()
 	{
 		String query = searchField.getText().trim();
-		if (query.length() < 2)
+		if (query.length() < 2 || !listModel.isEmpty())
 		{
 			return;
 		}
