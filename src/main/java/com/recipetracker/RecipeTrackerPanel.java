@@ -248,7 +248,7 @@ public class RecipeTrackerPanel extends PluginPanel
 				matches.add(recipe);
 			}
 		}
-		matches.sort(Comparator.comparingInt(recipe -> searchRank(recipe.getName(), query))
+		matches.sort(Comparator.comparingInt((Recipe recipe) -> searchRank(recipe.getName(), query))
 			.thenComparing(Recipe::getName, String.CASE_INSENSITIVE_ORDER));
 		for (int i = 0; i < Math.min(matches.size(), MAX_LOCAL_RESULTS); i++)
 		{
