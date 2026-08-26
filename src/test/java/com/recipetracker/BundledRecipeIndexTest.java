@@ -14,6 +14,18 @@ import static org.junit.Assert.assertTrue;
 public class BundledRecipeIndexTest
 {
 	@Test
+	public void repositoryLoadsBundledRecipes()
+	{
+		RecipeRepository repository = new RecipeRepository(new Gson());
+		repository.initialize();
+
+		assertTrue(repository.recipes().size() >= 4500);
+		Recipe oakLarder = repository.find(8234, "Oak larder");
+		assertNotNull(oakLarder);
+		assertEquals("Oak larder", oakLarder.getName());
+	}
+
+	@Test
 	public void containsBroadRecipeConstructionAndSailingCoverage() throws Exception
 	{
 		RecipeFile file;
